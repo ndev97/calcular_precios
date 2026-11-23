@@ -1,0 +1,22 @@
+{
+  "name": "calcular_precios",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Calculadora de Precios: calculadoras basadas en inflación para Argentina.",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "check": "astro check",
+    "test": "node --test src/lib/"
+  },
+  "dependencies": {
+    "@astrojs/sitemap": "^3.7.6",
+    "astro": "^7.4.13"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.12",
+    "typescript": "^6.0.3"
+  }
+}

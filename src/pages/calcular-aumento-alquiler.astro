@@ -1,0 +1,183 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import CalculadoraAlquiler from '../components/CalculadoraAlquiler.astro';
+import { obtenerIndices } from '../lib/indices.ts';
+import { calcularAlquiler, formatearFecha, formatearMes, sumarMeses } from '../lib/calculo.ts';
+
+// Se ejecuta una sola vez, en el build. Si falla, el build falla (mejor que publicar sin datos).
+const indices = await obtenerIndices();
+
+const title = 'Calcular aumento de alquiler por IPC e ICL';
+const description =
+  'Calculá el aumento de tu alquiler por IPC (inflación INDEC) o ICL (BCRA) con datos oficiales actualizados. Actualización cada 3, 4, 6 o 12 meses.';
+
+// ---- Datos para los textos (se renuevan en cada build) ----
+const pesos = (n: number) =>
+  n.toLocaleString('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 });
+const pct = (n: number) =>
+  n.toLocaleString('es-AR', { style: 'percent', minimumFractionDigits: 1, maximumFractionDigits: 1 });
+
+const [mesIPC, valorIPC] = indices.ipc[indices.ipc.length - 1];
+const valorIPCPrevio = indices.ipc[indices.ipc.length - 2][1];
+const inflacionMensual = valorIPC / valorIPCPrevio - 1;
+const inflacionInteranual = valorIPC / indices.ipc[indices.ipc.length - 13][1] - 1;
+
+const hoy = new Date().toISOString().slice(0, 10);
+const ejemplo = {
+  monto: 500_000,
+  inicio: sumarMeses(hoy.slice(0, 7) + '-01', -12),
+  indice: 'ipc' as const,
+  frecuencia: 3 as const,
+  hoy,
+};
+const resultadoEjemplo = calcularAlquiler(ejemplo, indices);
+const ejemploURL = `?monto=${ejemplo.monto}&inicio=${ejemplo.inicio}&indice=ipc&frecuencia=3`;
+
+const faqs = [
+  {
+    q: '¿Cómo se calcula el aumento del alquiler por IPC?',
+    a: 'Se divide el IPC del último mes publicado antes de la actualización por el IPC del mes equivalente al inicio del contrato, y se multiplica el alquiler inicial por ese coeficiente. Como el INDEC publica cada dato a mediados del mes siguiente, se usan los índices con dos meses de rezago: por ejemplo, para un aumento el 1 de abril se usa el IPC de febrero.',
+  },
+  {
+    q: '¿Qué diferencia hay entre IPC e ICL?',
+    a: 'El IPC es el índice de inflación mensual que publica el INDEC. El ICL (Índice para Contratos de Locación) es un índice diario del BCRA creado por la Ley 27.551, que combina por partes iguales la inflación y la variación de los salarios (RIPTE). En la práctica suelen dar resultados parecidos, pero no idénticos.',
+  },
+  {
+    q: '¿Cada cuánto se actualiza el alquiler?',
+    a: 'Depende de lo que diga el contrato. Desde el DNU 70/2023 las partes pueden pactar libremente la frecuencia; lo más habitual es cada 3, 4 o 6 meses. Los contratos firmados bajo la Ley 27.551 (entre julio de 2020 y diciembre de 2023) se actualizan una vez por año por ICL.',
+  },
+  {
+    q: '¿Qué pasa si todavía no salió el índice del mes?',
+    a: 'Si al momento de la actualización todavía no se publicó el índice necesario, la calculadora lo indica como pendiente. El INDEC publica el IPC a mediados de cada mes; el ICL del BCRA se publica por adelantado, por lo que suele estar disponible antes de la fecha de aumento.',
+  },
+  {
+    q: '¿Los datos son oficiales?',
+    a: 'Sí. El IPC se obtiene de la API de Series de Tiempo de datos.gob.ar (serie IPC Nivel General Nacional del INDEC) y el ICL de la API de estadísticas del Banco Central (BCRA).',
+  },
+];
+
+const jsonLd = [
+  {
+    '@context': 'https://schema.org',
+    '@type': 'WebApplication',
+    name: 'Calculadora de aumento de alquiler por IPC e ICL',
+    url: new URL(Astro.url.pathname, Astro.site).href,
+    applicationCategory: 'FinanceApplication',
+    operatingSystem: 'Any',
+    inLanguage: 'es-AR',
+    offers: { '@type': 'Offer', price: '0', priceCurrency: 'ARS' },
+  },
+  {
+    '@context': 'https://schema.org',
+    '@type': 'FAQPage',
+    mainEntity: faqs.map((f) => ({
+      '@type': 'Question',
+      name: f.q,
+      acceptedAnswer: { '@type': 'Answer', text: f.a },
+    })),
+  },
+  {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'Inicio', item: new URL('/', Astro.site).href },
+      { '@type': 'ListItem', position: 2, name: 'Aumento de alquiler', item: new URL(Astro.url.pathname, Astro.site).href },
+    ],
+  },
+];
+---
+
+<BaseLayout title={title} description={description}>
+  <script slot="head" type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
+
+  <nav class="breadcrumb" aria-label="Ruta de navegación">
+    <a href="/">Inicio</a> › Aumento de alquiler
+  </nav>
+
+  <h1>Calculadora de aumento de alquiler por IPC e ICL</h1>
+  <p class="lead">
+    Ingresá el monto inicial, la fecha de inicio del contrato, el índice y cada cuántos meses se
+    actualiza. Te mostramos cuánto tenés que pagar hoy y cuál es el próximo aumento, con datos
+    oficiales del INDEC y del BCRA.
+  </p>
+
+  <CalculadoraAlquiler indices={indices} />
+
+  <article class="prose">
+    <h2>Cómo calcular el aumento de alquiler por IPC</h2>
+    <p>
+      El IPC (Índice de Precios al Consumidor) mide la inflación mensual y lo publica el INDEC. Para
+      actualizar un alquiler por IPC se compara el índice del último mes disponible con el del
+      inicio del contrato:
+    </p>
+    <p class="formula">Alquiler nuevo = Alquiler inicial × (IPC mes de actualización − 2 / IPC mes de inicio − 2)</p>
+    <ol>
+      <li>Identificá la fecha del aumento según la frecuencia del contrato (cada 3, 4, 6 o 12 meses).</li>
+      <li>
+        Buscá el IPC de <strong>dos meses antes</strong> de esa fecha: es el último publicado al día 1, porque el
+        INDEC difunde cada dato a mediados del mes siguiente.
+      </li>
+      <li>Dividilo por el IPC de dos meses antes del inicio del contrato. El resultado es el coeficiente.</li>
+      <li>Multiplicá el alquiler inicial por el coeficiente.</li>
+    </ol>
+    <p>
+      El último IPC publicado es el de <strong>{formatearMes(mesIPC)}</strong>: la inflación fue de <strong>{pct(inflacionMensual)}</strong> mensual y <strong>{pct(inflacionInteranual)}</strong> interanual.
+    </p>
+
+    <h3>Ejemplo con datos reales</h3>
+    <p>
+      Un contrato de <strong>{pesos(ejemplo.monto)}</strong> que empezó el {formatearFecha(ejemplo.inicio)}, con
+      actualización trimestral por IPC:
+    </p>
+    <ul>
+      {
+        resultadoEjemplo.periodos.slice(1).map((p) => (
+          <li>
+            Desde el {formatearFecha(p.desde)}: <strong>{pesos(p.monto)}</strong> (+{pct(p.aumento)}; {p.referencia})
+          </li>
+        ))
+      }
+    </ul>
+    <p>
+      En total, el alquiler subió <strong>{pct(resultadoEjemplo.aumentoTotal)}</strong> desde el inicio.
+      <a href={ejemploURL}>Ver este ejemplo en la calculadora</a>.
+    </p>
+
+    <h2>Cómo calcular el aumento de alquiler por ICL</h2>
+    <p>
+      El ICL (Índice para Contratos de Locación) lo publica el Banco Central todos los días. El
+      cálculo es directo: se divide el ICL del día de la actualización por el ICL del día en que
+      empezó el contrato, y se multiplica el alquiler inicial por ese coeficiente.
+    </p>
+    <p class="formula">Alquiler nuevo = Alquiler inicial × (ICL fecha de actualización / ICL fecha de inicio)</p>
+    <p>
+      El ICL combina en partes iguales la inflación (IPC) y la evolución de los salarios (RIPTE). Se
+      publica desde el 1 de julio de 2020 y el BCRA lo informa con algunas semanas de anticipación.
+    </p>
+
+    <h2>¿IPC o ICL? Qué índice usar</h2>
+    <p>
+      Usá el índice que figura en tu contrato. Desde el 29 de diciembre de 2023, con el DNU 70/2023
+      que derogó la Ley de Alquileres, propietarios e inquilinos pueden pactar libremente el índice
+      y la frecuencia de actualización; en los contratos nuevos el más usado es el IPC. Los contratos
+      firmados durante la vigencia de la Ley 27.551 (julio 2020 a diciembre 2023) se siguen
+      actualizando de forma anual por ICL hasta su vencimiento.
+    </p>
+
+    <h2>Preguntas frecuentes</h2>
+    {
+      faqs.map((f) => (
+        <details>
+          <summary>{f.q}</summary>
+          <p>{f.a}</p>
+        </details>
+      ))
+    }
+
+    <p class="data-source">
+      Fuentes: INDEC, IPC Nivel General Nacional base dic-2016 (API Series de Tiempo, datos.gob.ar) y
+      BCRA, Índice para Contratos de Locación (API de Estadísticas v4). Página
+      generada el {formatearFecha(hoy)}.
+    </p>
+  </article>
+</BaseLayout>

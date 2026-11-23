@@ -1,0 +1,42 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+
+const calculadoras = [
+  {
+    href: '/calcular-aumento-alquiler/',
+    titulo: 'Aumento de alquiler por IPC e ICL',
+    descripcion: 'Calculá cuánto tenés que pagar de alquiler hoy y cuál es tu próximo aumento.',
+  },
+];
+
+const proximamente = ['Actualizar sueldo por inflación', 'Aguinaldo', 'Precios en dólares'];
+---
+
+<BaseLayout
+  title="Calculadora de Precios"
+  description="Calculadoras basadas en inflación para Argentina: aumento de alquiler por IPC e ICL y más, con datos oficiales del INDEC y el BCRA."
+>
+  <h1>Calculadoras basadas en inflación para Argentina</h1>
+  <p class="lead">
+    Herramientas gratuitas para actualizar montos con datos oficiales del INDEC y del Banco Central.
+  </p>
+
+  <div class="grid">
+    {
+      calculadoras.map((c) => (
+        <a class="card card-link" href={c.href}>
+          <h2 style="margin-top:0">{c.titulo}</h2>
+          <p style="margin:0">{c.descripcion}</p>
+        </a>
+      ))
+    }
+    {
+      proximamente.map((titulo) => (
+        <div class="card" aria-disabled="true">
+          <span class="tag">Próximamente</span>
+          <h2 style="margin-top:8px;margin-bottom:0;color:var(--muted)">{titulo}</h2>
+        </div>
+      ))
+    }
+  </div>
+</BaseLayout>

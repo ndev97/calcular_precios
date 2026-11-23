@@ -1,0 +1,287 @@
+---
+import type { Indices } from '../lib/indices.ts';
+import { FRECUENCIAS, formatearMes, formatearFecha } from '../lib/calculo.ts';
+
+interface Props {
+  indices: Indices;
+}
+
+const { indices } = Astro.props;
+const ultimoIPC = indices.ipc[indices.ipc.length - 1][0];
+const ultimoICL = indices.icl[indices.icl.length - 1][0];
+const NOMBRES_FRECUENCIA: Record<number, string> = {
+  3: 'Trimestral',
+  4: 'Cuatrimestral',
+  6: 'Semestral',
+  12: 'Anual',
+};
+---
+
+<section class="card" aria-labelledby="calc-titulo">
+  <h2 id="calc-titulo" style="margin-top:0">Calculá tu aumento</h2>
+
+  <form id="form-alquiler" novalidate>
+    <div class="form-row">
+      <div class="field">
+        <label for="monto">Alquiler inicial</label>
+        <div class="input-prefix">
+          <span aria-hidden="true">$</span>
+          <input
+            id="monto"
+            name="monto"
+            type="text"
+            inputmode="numeric"
+            autocomplete="off"
+            placeholder="500.000"
+            required
+          />
+        </div>
+        <span class="hint">El monto que figura en el contrato al inicio.</span>
+      </div>
+
+      <div class="field">
+        <label for="inicio">Fecha de inicio del contrato</label>
+        <input id="inicio" name="inicio" type="date" min="2017-02-01" required />
+        <span class="hint">Desde esta fecha se cuentan los períodos.</span>
+      </div>
+    </div>
+
+    <fieldset class="field">
+      <legend>Índice de actualización</legend>
+      <div class="segmented">
+        <label>
+          <input type="radio" name="indice" value="ipc" checked />
+          <span>IPC <small>Inflación (INDEC)</small></span>
+        </label>
+        <label>
+          <input type="radio" name="indice" value="icl" />
+          <span>ICL <small>Índice BCRA</small></span>
+        </label>
+      </div>
+    </fieldset>
+
+    <fieldset class="field">
+      <legend>Frecuencia de actualización</legend>
+      <div class="segmented segmented-4">
+        {
+          FRECUENCIAS.map((f) => (
+            <label>
+              <input type="radio" name="frecuencia" value={f} checked={f === 3} />
+              <span>
+                {f} meses <small>{NOMBRES_FRECUENCIA[f]}</small>
+              </span>
+            </label>
+          ))
+        }
+      </div>
+    </fieldset>
+
+    <button class="btn" type="submit">Calcular aumento</button>
+  </form>
+
+  <div id="resultado" class="result" aria-live="polite"></div>
+
+  <p class="data-source" id="fuente-datos">
+    Datos disponibles: IPC hasta <strong>{formatearMes(ultimoIPC)}</strong> ·
+    ICL hasta <strong>{formatearFecha(ultimoICL)}</strong>.
+  </p>
+</section>
+
+<script id="datos-indices" type="application/json" set:html={JSON.stringify(indices)} />
+
+<script>
+  import { calcularAlquiler, ErrorCalculo, formatearFecha, formatearMes, sumarMeses, REZAGO_IPC } from '../lib/calculo.ts';
+  import type { Entrada, Frecuencia, Indice, Resultado, Periodo } from '../lib/calculo.ts';
+  import { actualizarIndices, type Indices } from '../lib/indices.ts';
+
+  /** Si los datos embebidos en el build tienen más de esto, se refrescan desde las APIs. */
+  const ANTIGUEDAD_MAXIMA_MS = 12 * 60 * 60 * 1000;
+  const MIN_INICIO: Record<Indice, string> = { ipc: '2017-02-01', icl: '2020-07-01' };
+
+  const form = document.getElementById('form-alquiler') as HTMLFormElement;
+  const montoInput = form.elements.namedItem('monto') as HTMLInputElement;
+  const inicioInput = form.elements.namedItem('inicio') as HTMLInputElement;
+  const resultado = document.getElementById('resultado')!;
+  const fuente = document.getElementById('fuente-datos')!;
+  let indices: Indices = JSON.parse(document.getElementById('datos-indices')!.textContent!);
+
+  const pesos = new Intl.NumberFormat('es-AR', {
+    style: 'currency',
+    currency: 'ARS',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  const porcentaje = new Intl.NumberFormat('es-AR', {
+    style: 'percent',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  const miles = new Intl.NumberFormat('es-AR', { maximumFractionDigits: 0 });
+
+  function hoyLocal(): string {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  /** "500.000" → 500000. Solo pesos enteros. */
+  function parsearMonto(texto: string): number {
+    return Number(texto.replace(/\D/g, ''));
+  }
+
+  function leerEntrada(): Entrada {
+    const datos = new FormData(form);
+    return {
+      monto: parsearMonto(String(datos.get('monto') ?? '')),
+      inicio: String(datos.get('inicio') ?? ''),
+      indice: datos.get('indice') as Indice,
+      frecuencia: Number(datos.get('frecuencia')) as Frecuencia,
+      hoy: hoyLocal(),
+    };
+  }
+
+  // ---------- render ----------
+
+  const nombreIndice = (i: Indice) => (i === 'ipc' ? 'IPC' : 'ICL');
+
+  function filaPeriodo(p: Periodo, proxima = false): string {
+    const etiqueta = proxima ? 'Próximo aumento' : p.numero === 0 ? 'Inicio' : `Aumento ${p.numero}`;
+    const aumento = p.numero === 0 ? '—' : `<span class="up">+${porcentaje.format(p.aumento)}</span>`;
+    return `
+      <tr${proxima ? ' class="is-next"' : ''}>
+        <td data-col="periodo">${etiqueta}<br /><small>${formatearFecha(p.desde)} al ${formatearFecha(p.hasta)}</small></td>
+        <td data-col="monto" class="num">${pesos.format(p.monto)}</td>
+        <td data-col="aumento" class="num">${aumento}</td>
+        <td data-col="ref">${p.referencia}${p.numero > 0 ? ` = ${p.coeficiente.toFixed(4).replace('.', ',')}` : ''}</td>
+      </tr>`;
+  }
+
+  function avisoProxima(r: Resultado, e: Entrada): string {
+    const p = r.proxima;
+    if (!p || p.periodo) return '';
+    const falta =
+      e.indice === 'ipc'
+        ? `el INDEC todavía no publicó el IPC de ${formatearMes(sumarMeses(p.fecha, -REZAGO_IPC).slice(0, 7))}`
+        : 'el BCRA todavía no publicó el ICL de esa fecha';
+    const verbo = p.motivo === 'sin-dato' ? 'correspondía el' : 'será el';
+    return `<p class="alert alert-warn">La próxima actualización ${verbo} ${formatearFecha(p.fecha)}, pero ${falta}. Volvé a consultar cuando se publique.</p>`;
+  }
+
+  function render(r: Resultado, e: Entrada) {
+    const actual = r.periodos[r.periodos.length - 1];
+    const prox = r.proxima;
+    const statProxima = prox?.periodo
+      ? `<div class="stat">
+           <span class="stat-label">Próximo aumento (${formatearFecha(prox.fecha)})</span>
+           <span class="stat-value">${pesos.format(prox.periodo.monto)}</span>
+           <span class="stat-sub up">+${porcentaje.format(prox.periodo.aumento)}</span>
+         </div>`
+      : `<div class="stat">
+           <span class="stat-label">Próximo aumento</span>
+           <span class="stat-value">${prox ? formatearFecha(prox.fecha) : '—'}</span>
+           <span class="stat-sub">Índice aún no publicado</span>
+         </div>`;
+
+    resultado.innerHTML = `
+      <div class="stats">
+        <div class="stat stat-main">
+          <span class="stat-label">Alquiler actual</span>
+          <span class="stat-value">${pesos.format(actual.monto)}</span>
+          <span class="stat-sub">Vigente desde el ${formatearFecha(actual.desde)}</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Aumento acumulado</span>
+          <span class="stat-value up">+${porcentaje.format(r.aumentoTotal)}</span>
+          <span class="stat-sub">Desde el inicio, por ${nombreIndice(e.indice)}</span>
+        </div>
+        ${statProxima}
+      </div>
+      ${avisoProxima(r, e)}
+      <table class="table-periodos">
+        <caption class="skip-link">Evolución del alquiler por período</caption>
+        <thead>
+          <tr><th>Período</th><th class="num">Alquiler</th><th class="num">Aumento</th><th>Cálculo</th></tr>
+        </thead>
+        <tbody>
+          ${r.periodos.map((p) => filaPeriodo(p)).join('')}
+          ${prox?.periodo ? filaPeriodo(prox.periodo, true) : ''}
+        </tbody>
+      </table>`;
+  }
+
+  function mostrarError(mensaje: string) {
+    resultado.innerHTML = `<p class="alert alert-error">${mensaje}</p>`;
+  }
+
+  // ---------- URL compartible ----------
+
+  function guardarEnURL(e: Entrada) {
+    const params = new URLSearchParams({
+      monto: String(e.monto),
+      inicio: e.inicio,
+      indice: e.indice,
+      frecuencia: String(e.frecuencia),
+    });
+    history.replaceState(null, '', `?${params}`);
+  }
+
+  function cargarDesdeURL(): boolean {
+    const p = new URLSearchParams(location.search);
+    const monto = parsearMonto(p.get('monto') ?? '');
+    if (monto) montoInput.value = miles.format(monto);
+    if (p.get('inicio')) inicioInput.value = p.get('inicio')!;
+    for (const nombre of ['indice', 'frecuencia']) {
+      const valor = p.get(nombre);
+      const radio = valor && form.querySelector<HTMLInputElement>(`input[name="${nombre}"][value="${CSS.escape(valor)}"]`);
+      if (radio) radio.checked = true;
+    }
+    return Boolean(monto && p.get('inicio'));
+  }
+
+  // ---------- flujo ----------
+
+  function calcular(mostrarErrores: boolean) {
+    const entrada = leerEntrada();
+    inicioInput.min = MIN_INICIO[entrada.indice];
+    inicioInput.max = entrada.hoy;
+    try {
+      const r = calcularAlquiler(entrada, indices);
+      render(r, entrada);
+      guardarEnURL(entrada);
+    } catch (err) {
+      if (!(err instanceof ErrorCalculo)) throw err;
+      if (mostrarErrores) mostrarError(err.message);
+      else resultado.innerHTML = '';
+    }
+  }
+
+  form.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    calcular(true);
+    resultado.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
+
+  // Recalcula en vivo, sin mostrar errores mientras el usuario todavía está completando.
+  form.addEventListener('change', () => calcular(Boolean(montoInput.value && inicioInput.value)));
+
+  montoInput.addEventListener('blur', () => {
+    const n = parsearMonto(montoInput.value);
+    montoInput.value = n ? miles.format(n) : '';
+  });
+
+  async function refrescarDatos() {
+    if (Date.now() - new Date(indices.actualizado).getTime() < ANTIGUEDAD_MAXIMA_MS) return;
+    try {
+      indices = await actualizarIndices(indices);
+      const ipc = indices.ipc[indices.ipc.length - 1][0];
+      const icl = indices.icl[indices.icl.length - 1][0];
+      fuente.innerHTML = `Datos disponibles: IPC hasta <strong>${formatearMes(ipc)}</strong> · ICL hasta <strong>${formatearFecha(icl)}</strong> (actualizados recién).`;
+      if (resultado.innerHTML) calcular(false);
+    } catch {
+      // Sin conexión o API caída: seguimos con los datos del build.
+    }
+  }
+
+  inicioInput.max = hoyLocal();
+  if (cargarDesdeURL()) calcular(true);
+  refrescarDatos();
+</script>
